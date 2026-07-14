@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   IconPlus, IconList, IconDownload, IconPrinter,
   IconCheck, IconEdit, IconTrash, IconClipboardText,
@@ -8,7 +8,8 @@ import {
 const KOERPERTEILE = [
   "Kopf","Nacken","Schulter links","Schulter rechts","Arm links","Arm rechts",
   "Brust","Rücken oben","Rücken unten","Bauch","Hüfte links","Hüfte rechts",
-  "Bein links","Bein rechts","Knie links","Knie rechts","Fuß links","Fuß rechts","Sonstiges"
+  "Bein links","Bein rechts","Knie links","Knie rechts","Fuß links","Fuß rechts",
+  "Hand links","Hand rechts","Sonstiges"
 ];
 
 const BEEINTRAECHTIGUNGEN = ["Schlaf","Arbeit","Bewegung","Konzentration","Stimmung"];
@@ -60,21 +61,13 @@ const emptyFilter = (): Filter => ({
   dateFrom: "", dateTo: "", intensityMin: 1, intensityMax: 10, beeintraechtigung: ""
 });
 
+const apiFetch = (path: string, options?: RequestInit) =>
+  fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options?.headers } });
+
 export default function App() {
-  const [entries, setEntries] = useState<Entry[]>(() => {
-    try {
-      const stored = localStorage.getItem("schmerzprotokoll_v2");
-      if (!stored) return [];
-      return JSON.parse(stored).map((e: Entry) => ({
-        ...e,
-        beeintraechtigung: Array.isArray(e.beeintraechtigung)
-          ? e.beeintraechtigung
-          : e.beeintraechtigung && e.beeintraechtigung !== "Keine"
-            ? [e.beeintraechtigung as unknown as string]
-            : []
-      }));
-    } catch { return []; }
-  });
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState(false);
   const [form, setForm] = useState(emptyForm());
   const [view, setView] = useState<"form" | "table">("form");
   const [editId, setEditId] = useState<number | null>(null);
@@ -82,30 +75,32 @@ export default function App() {
   const [showFilter, setShowFilter] = useState(false);
   const [showKtDropdown, setShowKtDropdown] = useState(false);
   const [showBtDropdown, setShowBtDropdown] = useState(false);
-  const [schmerzcharakterOptionen, setSchmerzcharakterOptionen] = useState<string[]>(() => {
-    try {
-      const stored = localStorage.getItem("schmerzprotokoll_charakter");
-      return stored ? JSON.parse(stored) : SCHMERZCHARAKTER_DEFAULT;
-    } catch { return SCHMERZCHARAKTER_DEFAULT; }
-  });
+  const [schmerzcharakterOptionen, setSchmerzcharakterOptionen] = useState<string[]>(SCHMERZCHARAKTER_DEFAULT);
   const [showAddCharakter, setShowAddCharakter] = useState(false);
   const [newCharakter, setNewCharakter] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    Promise.all([
+      apiFetch("/api/entries").then(r => r.json()),
+      apiFetch("/api/charakter").then(r => r.json()),
+    ]).then(([loadedEntries, loadedCharakter]) => {
+      setEntries(loadedEntries);
+      setSchmerzcharakterOptionen(loadedCharakter);
+      if (loadedEntries.length > 0) setView("table");
+    }).catch(() => setApiError(true)).finally(() => setLoading(false));
+  }, []);
 
   const addCharakter = () => {
     const val = newCharakter.trim();
     if (!val || schmerzcharakterOptionen.includes(val)) return;
     const updated = [...schmerzcharakterOptionen, val];
     setSchmerzcharakterOptionen(updated);
-    localStorage.setItem("schmerzprotokoll_charakter", JSON.stringify(updated));
+    apiFetch("/api/charakter", { method: "PUT", body: JSON.stringify(updated) });
     setF("schmerzcharakter", val);
     setNewCharakter("");
     setShowAddCharakter(false);
-  };
-
-  const persist = (updated: Entry[]) => {
-    setEntries(updated);
-    localStorage.setItem("schmerzprotokoll_v2", JSON.stringify(updated));
   };
 
   const setF = (k: keyof typeof form, v: string | number | string[]) =>
@@ -121,17 +116,32 @@ export default function App() {
     setF("beeintraechtigung", cur.includes(b) ? cur.filter(x => x !== b) : [...cur, b]);
   };
 
-  const save = () => {
-    const updated = editId !== null
-      ? entries.map(e => e.id === editId ? { ...form, id: editId } : e)
-      : [...entries, { ...form, id: Date.now() }];
-    persist(updated);
-    setEditId(null);
-    setForm(emptyForm());
-    setView("table");
+  const save = async () => {
+    setSaveError(null);
+    try {
+      if (editId !== null) {
+        const updated = { ...form, id: editId };
+        const res = await apiFetch(`/api/entries/${editId}`, { method: "PUT", body: JSON.stringify(updated) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setEntries(entries.map(e => e.id === editId ? updated : e));
+      } else {
+        const newEntry = { ...form, id: Date.now() };
+        const res = await apiFetch("/api/entries", { method: "POST", body: JSON.stringify(newEntry) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setEntries([...entries, newEntry]);
+      }
+      setEditId(null);
+      setForm(emptyForm());
+      setView("table");
+    } catch (err) {
+      setSaveError(`Fehler beim Speichern: ${err instanceof Error ? err.message : "Unbekannter Fehler"}`);
+    }
   };
 
-  const del = (id: number) => persist(entries.filter(e => e.id !== id));
+  const del = async (id: number) => {
+    await apiFetch(`/api/entries/${id}`, { method: "DELETE" });
+    setEntries(entries.filter(e => e.id !== id));
+  };
 
   const startEdit = (e: Entry) => {
     setForm({ ...e });
@@ -175,7 +185,7 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const lines = (ev.target?.result as string).split("\n").slice(1).filter(Boolean);
         const imported: Entry[] = lines.map((line, i) => {
@@ -196,7 +206,10 @@ export default function App() {
             kommentar: get(6),
           };
         });
-        persist([...entries, ...imported]);
+        await Promise.all(imported.map(entry =>
+          apiFetch("/api/entries", { method: "POST", body: JSON.stringify(entry) })
+        ));
+        setEntries(prev => [...prev, ...imported]);
         setView("table");
         alert(`${imported.length} Einträge erfolgreich importiert.`);
       } catch { alert("Fehler beim Importieren. Bitte prüfe das CSV-Format."); }
@@ -206,6 +219,24 @@ export default function App() {
   };
 
   const ic = intensityColor(form.intensity);
+
+  if (loading) return (
+    <div style={{ fontFamily: "sans-serif", padding: "4rem 1rem", textAlign: "center", color: "#aaa" }}>
+      Lade Daten…
+    </div>
+  );
+
+  if (apiError) return (
+    <div style={{ fontFamily: "sans-serif", padding: "4rem 1rem", textAlign: "center", color: "#c0392b" }}>
+      <p style={{ fontSize: 16, fontWeight: 500 }}>API nicht erreichbar</p>
+      <p style={{ fontSize: 13, color: "#888", marginTop: 8 }}>Backend antwortet nicht. Bitte prüfe ob der Stack läuft.</p>
+      <button style={{ marginTop: 16, padding: "8px 18px", borderRadius: 6, border: "1px solid #ccc",
+        background: "#f4f4f2", cursor: "pointer", fontFamily: "inherit" }}
+        onClick={() => window.location.reload()}>
+        Erneut versuchen
+      </button>
+    </div>
+  );
 
   return (
     <div style={{ fontFamily: "sans-serif", padding: "2rem 1rem", maxWidth: 820, margin: "0 auto" }}>
@@ -480,6 +511,12 @@ export default function App() {
             </div>
           </div>
 
+          {saveError && (
+            <div style={{ marginTop: "1rem", padding: "8px 12px", borderRadius: 6,
+              background: "#FCEBEB", color: "#A32D2D", border: "1px solid #E24B4A", fontSize: 13 }}>
+              {saveError}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: "1.25rem", justifyContent: "flex-end" }}>
             {editId !== null && (
               <button className="btn" onClick={cancelEdit}><IconX size={14} /> Abbrechen</button>

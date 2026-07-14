@@ -1,0 +1,78 @@
+services:
+
+  frontend:
+    image: schmerzprotokoll-frontend:latest
+    secrets:
+      - nginx_apikey
+    networks:
+      - internal
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.role == manager"
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: schmerzprotokoll
+    environment:
+      - TS_AUTHKEY=file:/run/secrets/ts_authkey
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true
+      - TS_SERVE_CONFIG=/config/serve.json
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./tailscale/serve.json:/config/serve.json:ro
+    secrets:
+      - ts_authkey
+    networks:
+      - internal
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.role == manager"
+      restart_policy:
+        condition: on-failure
+
+  backend:
+    image: schmerzprotokoll-backend:latest
+    secrets:
+      - nginx_apikey
+      - opensearch_schmerzprotokoll_password
+    environment:
+      - OPENSEARCH_NODE=https://opensearch-node1:9200
+      - OPENSEARCH_USERNAME=schmerzprotokoll
+    volumes:
+      - db-data:/data
+    networks:
+      - internal
+      - opensearch-net
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.role == manager"
+      restart_policy:
+        condition: on-failure
+
+volumes:
+  db-data: {}
+  ts-state: {}
+
+networks:
+  internal:
+    driver: overlay
+    attachable: false
+  opensearch-net:
+    external: true
+    name: opensearch_opensearch-net
+
+secrets:
+  ts_authkey:
+    external: true
+  nginx_apikey:
+    external: true
+  opensearch_schmerzprotokoll_password:
+    external: true
