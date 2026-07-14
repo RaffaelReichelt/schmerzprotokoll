@@ -3,12 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "migrate": "node migrate-to-opensearch.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "@opensearch-project/opensearch": "^3.6.0",
-    "better-sqlite3": "^11.0.0",
     "express": "^4.19.0"
   }
 }
